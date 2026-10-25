@@ -1,0 +1,49 @@
+{
+  "title": "Model Reliability & Accuracy",
+  "model": "EfficientNet-B0",
+  "method": "5-fold cross-validation, 8 epochs per fold. Every photo was tested once by a model that had not seen it.",
+  "usedByApp": "Roboflow + Mendeley",
+  "runs": [
+    {
+      "name": "Roboflow only",
+      "trainedOn": "Roboflow",
+      "testedOn": "8,832 Roboflow photos",
+      "accuracy": 0.9968,
+      "f1": 0.9969,
+      "aucRoc": 0.9998,
+      "kappa": 0.9964,
+      "kappaLow": 0.9946,
+      "kappaHigh": 0.9983,
+      "wrong": "28 of 8,832",
+      "usedByApp": false
+    },
+    {
+      "name": "Mendeley only",
+      "trainedOn": "Mendeley",
+      "testedOn": "17,431 Mendeley photos",
+      "accuracy": 0.9992,
+      "f1": 0.9992,
+      "aucRoc": 0.9999,
+      "kappa": 0.999,
+      "kappaLow": 0.9982,
+      "kappaHigh": 0.9999,
+      "wrong": "14 of 17,431",
+      "usedByApp": false
+    },
+    {
+      "name": "Roboflow + Mendeley",
+      "trainedOn": "Roboflow + Mendeley",
+      "testedOn": "the same 8,832 Roboflow photos",
+      "accuracy": 0.9991,
+      "f1": 0.9991,
+      "aucRoc": 0.9998,
+      "kappa": 0.999,
+      "kappaLow": 0.9981,
+      "kappaHigh": 0.9999,
+      "wrong": "8 of 8,832",
+      "usedByApp": true
+    }
+  ],
+  "kappaMeaning": "Almost perfect agreement (Landis & Koch scale). Kappa shows how much better the model is than guessing: 0 is chance, 1 is perfect.",
+  "caveat": "These scores come from photos taken from the same collections the model learned from. Phone photos taken in your own garden may score lower, so treat low-confidence results with care."
+}

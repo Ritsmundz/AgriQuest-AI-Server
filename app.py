@@ -3,6 +3,8 @@ AgriQuest Leaf Detector API (runs on Render).
 
 POST /predict   multipart form with an image file in the field "file"
 GET  /health    used to wake the server up and by Render's health check
+GET  /reliability          k-fold + Cohen's kappa results (reliability.json)
+GET  /reference?label=...  example photos of a disease (reference/<classId>/1.jpg ...)
 
 The model is the EfficientNet-B0 from classify_leaf_pipeline.py (best.pt),
 converted to ONNX so it fits in Render's free 512 MB instance.
@@ -18,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 HERE = Path(__file__).parent
@@ -52,7 +55,14 @@ opts.inter_op_num_threads = 1
 session = ort.InferenceSession(str(HERE / "model.onnx"), opts, providers=["CPUExecutionProvider"])
 INPUT_NAME = session.get_inputs()[0].name
 
-app = FastAPI(title="AgriQuest Leaf Detector", version="1.0")
+app = FastAPI(title="AgriQuest Leaf Detector", version="1.1")
+
+# ---- model reliability and example photos (read-only, no secrets) ----
+REFERENCE_DIR = HERE / "reference"
+RELIABILITY_FILE = HERE / "reliability.json"
+LABEL_TO_CLASS = {label: cid for cid, (label, _) in DISPLAY.items()}
+if REFERENCE_DIR.is_dir():
+    app.mount("/reference-files", StaticFiles(directory=str(REFERENCE_DIR)), name="reference-files")
 
 
 def preprocess(raw: bytes) -> np.ndarray:
@@ -114,4 +124,27 @@ async def predict(file: UploadFile = File(...), x_api_key: str | None = Header(d
             for i in order[:3]
         ],
         "inferenceMs": ms,
+    }
+
+
+@app.get("/reliability")
+def reliability():
+    """The 5-fold cross-validation and Cohen's kappa results shown in the app."""
+    if not RELIABILITY_FILE.exists():
+        raise HTTPException(status_code=404, detail="No reliability results on this server")
+    return json.loads(RELIABILITY_FILE.read_text())
+
+
+@app.get("/reference")
+def reference(label: str):
+    """Example photos of one disease, e.g. /reference?label=Early Blight (labels as /predict returns them)."""
+    class_id = LABEL_TO_CLASS.get(label)
+    folder = REFERENCE_DIR / class_id if class_id else None
+    if folder is None or not folder.is_dir():
+        raise HTTPException(status_code=404, detail="No example photos for that label")
+    files = sorted(folder.glob("*.jpg"), key=lambda f: int(f.stem) if f.stem.isdigit() else 0)
+    return {
+        "label": label,
+        "classId": class_id,
+        "photos": [f"/reference-files/{class_id}/{f.name}" for f in files],
     }
