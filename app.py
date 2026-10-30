@@ -9,7 +9,7 @@ GET  /reference?label=...  example photos of a disease (reference/<classId>/1.jp
 The model is the EfficientNet-B0 from classify_leaf_pipeline.py (best.pt),
 converted to ONNX so it fits in Render's free 512 MB instance.
 Pre-processing matches the script's evaluation transform exactly:
-    Resize((320, 320)) -> ToTensor() -> Normalize(ImageNet mean, std)
+    pad to a 320x320 square (no stretching) -> ToTensor() -> Normalize(ImageNet mean, std)
 """
 import io
 import json
@@ -27,6 +27,7 @@ HERE = Path(__file__).parent
 IMG_SIZE = 320
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+PAD_COLOR = (124, 116, 104)                   # grey bars, close to the ImageNet mean colour
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024          # 10 MB
 LOW_CONFIDENCE = 0.50                        # below this the app should suggest a retake
 API_KEY = os.environ.get("API_KEY")          # optional: set it in Render to block strangers
@@ -68,7 +69,9 @@ if REFERENCE_DIR.is_dir():
 def preprocess(raw: bytes) -> np.ndarray:
     img = Image.open(io.BytesIO(raw))
     img = ImageOps.exif_transpose(img)        # phone photos are often stored sideways
-    img = img.convert("RGB").resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+    img = img.convert("RGB")
+    # Pad to a square instead of stretching: the leaf keeps its real shape (field tests: 0% stretched, 40% padded).
+    img = ImageOps.pad(img, (IMG_SIZE, IMG_SIZE), color=PAD_COLOR)
     x = np.asarray(img, dtype=np.float32) / 255.0
     x = (x - MEAN) / STD
     return x.transpose(2, 0, 1)[None]         # (1, 3, 320, 320)
