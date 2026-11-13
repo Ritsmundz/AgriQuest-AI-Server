@@ -8,9 +8,11 @@ GET  /reference?label=...  example photos of a disease (reference/<classId>/1.jp
 
 The model is the EfficientNet-B0 from classify_leaf_pipeline.py (best.pt),
 converted to ONNX so it fits in Render's free 512 MB instance.
-Pre-processing matches the script's evaluation transform exactly:
-    pad to a 320x320 square (no stretching) -> ToTensor() -> Normalize(ImageNet mean, std)
+Pre-processing: pad the photo to a square (never stretch it), resize to 320 x 320,
+then normalize with the ImageNet mean and std. The model also returns class activation
+maps (CAM, the Grad-CAM shortcut for global pooling + one linear layer) for the heatmap.
 """
+import base64
 import io
 import json
 import os
@@ -27,7 +29,7 @@ HERE = Path(__file__).parent
 IMG_SIZE = 320
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-PAD_COLOR = (124, 116, 104)                   # grey bars, close to the ImageNet mean colour
+PAD_COLOR = (124, 116, 104)                    # gray fill used when padding, same as in training
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024          # 10 MB
 LOW_CONFIDENCE = 0.50                        # below this the app should suggest a retake
 API_KEY = os.environ.get("API_KEY")          # optional: set it in Render to block strangers
@@ -66,15 +68,35 @@ if REFERENCE_DIR.is_dir():
     app.mount("/reference-files", StaticFiles(directory=str(REFERENCE_DIR)), name="reference-files")
 
 
-def preprocess(raw: bytes) -> np.ndarray:
+def preprocess(raw: bytes):
     img = Image.open(io.BytesIO(raw))
     img = ImageOps.exif_transpose(img)        # phone photos are often stored sideways
     img = img.convert("RGB")
-    # Pad to a square instead of stretching: the leaf keeps its real shape (field tests: 0% stretched, 40% padded).
+    size = img.size                           # original (width, height), needed to place the heatmap
     img = ImageOps.pad(img, (IMG_SIZE, IMG_SIZE), color=PAD_COLOR)
     x = np.asarray(img, dtype=np.float32) / 255.0
     x = (x - MEAN) / STD
-    return x.transpose(2, 0, 1)[None]         # (1, 3, 320, 320)
+    return x.transpose(2, 0, 1)[None], size   # (1, 3, 320, 320)
+
+
+def heatmap_png(cam: np.ndarray, size) -> str:
+    """cam: (h, w) map of the predicted class. Returns a base64 PNG overlay with the photo's own
+    width and height (the gray padding is cut off), transparent where the model paid little attention."""
+    cam = np.maximum(cam, 0)
+    cam = cam / cam.max() if cam.max() > 0 else cam
+    big = Image.fromarray((cam * 255).astype(np.uint8)).resize((IMG_SIZE, IMG_SIZE), Image.BICUBIC)
+    w, h = size
+    scale = min(IMG_SIZE / w, IMG_SIZE / h)
+    cw, ch = round(w * scale), round(h * scale)
+    left, top = (IMG_SIZE - cw) // 2, (IMG_SIZE - ch) // 2
+    big = big.crop((left, top, left + cw, top + ch)).resize(size, Image.BICUBIC)
+    v = np.asarray(big, dtype=np.float32) / 255.0
+    # simple blue -> green -> yellow -> red ramp
+    r = np.clip(4 * v - 2, 0, 1); g = np.clip(np.minimum(4 * v, 4 - 4 * v), 0, 1); b = np.clip(2 - 4 * v, 0, 1)
+    a = np.clip(v * 1.6, 0, 1) * 0.65
+    rgba = (np.stack([r, g, b, a], -1) * 255).astype(np.uint8)
+    buf = io.BytesIO(); Image.fromarray(rgba, "RGBA").save(buf, "PNG", optimize=True)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def softmax(z: np.ndarray) -> np.ndarray:
@@ -100,12 +122,13 @@ async def predict(file: UploadFile = File(...), x_api_key: str | None = Header(d
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Image is larger than 10 MB")
     try:
-        x = preprocess(raw)
+        x, size = preprocess(raw)
     except (UnidentifiedImageError, OSError):
         raise HTTPException(status_code=400, detail="File is not a readable image")
 
     t0 = time.perf_counter()
-    logits = session.run(None, {INPUT_NAME: x})[0][0]
+    logits, cams = session.run(None, {INPUT_NAME: x})
+    logits, cams = logits[0], cams[0]
     ms = round((time.perf_counter() - t0) * 1000)
     prob = softmax(logits)
 
@@ -113,6 +136,7 @@ async def predict(file: UploadFile = File(...), x_api_key: str | None = Header(d
     best = CLASSES[int(order[0])]
     label, pathogen = DISPLAY.get(best, (best, None))
     conf = float(prob[order[0]])
+    heatmap = heatmap_png(cams[int(order[0])], size)
     return {
         "label": label,                       # e.g. "Early Blight"
         "classId": best,                      # raw name from data.yaml
@@ -127,6 +151,7 @@ async def predict(file: UploadFile = File(...), x_api_key: str | None = Header(d
             for i in order[:3]
         ],
         "inferenceMs": ms,
+        "heatmapPng": heatmap,                # base64 PNG overlay, same size as the photo
     }
 
 
