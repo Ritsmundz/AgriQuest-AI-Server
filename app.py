@@ -81,7 +81,7 @@ def preprocess(raw: bytes):
 
 def heatmap_png(cam: np.ndarray, size) -> str:
     """cam: (h, w) map of the predicted class. Returns a base64 PNG overlay with the photo's own
-    width and height (the gray padding is cut off), transparent where the model paid little attention."""
+    shape, at most 480 px on the long side (the gray padding is cut off; the app stretches it over the photo), transparent where the model paid little attention."""
     cam = np.maximum(cam, 0)
     cam = cam / cam.max() if cam.max() > 0 else cam
     big = Image.fromarray((cam * 255).astype(np.uint8)).resize((IMG_SIZE, IMG_SIZE), Image.BICUBIC)
@@ -89,7 +89,10 @@ def heatmap_png(cam: np.ndarray, size) -> str:
     scale = min(IMG_SIZE / w, IMG_SIZE / h)
     cw, ch = round(w * scale), round(h * scale)
     left, top = (IMG_SIZE - cw) // 2, (IMG_SIZE - ch) // 2
-    big = big.crop((left, top, left + cw, top + ch)).resize(size, Image.BICUBIC)
+    # keep the overlay small (long side <= 480 px, same shape as the photo): a full-size overlay of a
+    # 12 MP phone photo needs hundreds of MB and crashes Render's free 512 MB instance
+    k = min(1.0, 480 / max(w, h))
+    big = big.crop((left, top, left + cw, top + ch)).resize((max(1, round(w * k)), max(1, round(h * k))), Image.BICUBIC)
     v = np.asarray(big, dtype=np.float32) / 255.0
     # simple blue -> green -> yellow -> red ramp
     r = np.clip(4 * v - 2, 0, 1); g = np.clip(np.minimum(4 * v, 4 - 4 * v), 0, 1); b = np.clip(2 - 4 * v, 0, 1)
@@ -151,7 +154,7 @@ async def predict(file: UploadFile = File(...), x_api_key: str | None = Header(d
             for i in order[:3]
         ],
         "inferenceMs": ms,
-        "heatmapPng": heatmap,                # base64 PNG overlay, same size as the photo
+        "heatmapPng": heatmap,                # base64 PNG overlay, same shape as the photo, max 480 px
     }
 
 
